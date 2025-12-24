@@ -15,7 +15,7 @@ def read_output(process, log_list):
 
 def start(): 
     global server, logs
-    os.chdir('/Users/crogers/Documents/Python Codes/PyScript Codes/techelements')
+    os.chdir('/Users/crogers/GitHub/Pyscript/techelements')
     new = start_server(host="127.0.0.1", port=8006, block=False)
     
     # Start a thread to buffer the output

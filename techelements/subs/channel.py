@@ -80,7 +80,7 @@ class CEEO_Channel():
     def setupSocket(self):
         #self.url = f"wss://{self.user}.pyscriptapps.com/{self.project}/api/channels/{self.channel}"
         host = window.location.host
-        self.url = f"ws://{host}/channel/{self.channel}"
+        self.url = f"wss://{host}/channel/{self.channel}"
 
         window.console.log(self.url)
         self.is_connected = False

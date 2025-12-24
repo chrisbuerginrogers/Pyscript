@@ -1,0 +1,46 @@
+from pyscript import document, window, when
+import asyncio, json
+
+window.console.log('Channel Test')
+
+import channel as _ch
+
+mytopic = '/LEGO'
+myChannel = _ch.CEEO_Channel("hackathon", "@chrisrogers", "talking-on-a-channel",
+                                 divName = 'all_things_channels', suffix='_test', default_topic = mytopic)
+document.getElementById('topic_test').innerHTML = mytopic
+
+class Channel:
+    """You can use this function to read or write to the channel.
+        channel.send('some text') will send a string (or number) on topic '/LEGO'
+        channel.msg has the latest message on the '/LEGO' channel
+    """
+    def __init__(self):
+        self.msg = None
+        self.value = -1
+        myChannel.callback = self._receive 
+    
+    def _receive(self, message):
+        window.console.log('Chann')
+        thetopic = document.getElementById('topic_test').value
+        topic, msg = myChannel.check(thetopic, message)
+        if msg:  
+            self.msg = msg
+            try:
+                number = float(msg)
+                self.value = int(number) if number % 1.0 == 0 else number
+            except:
+                self.value = -1
+            
+    async def _sendIt(self, msg):
+        thetopic = document.getElementById('topic_test').value
+        await myChannel.post(thetopic, msg)
+        await asyncio.sleep(0.1)
+        
+    def send(self, msg):
+        loop = asyncio.get_event_loop()
+        success = loop.create_task(self._sendIt(msg))
+
+channel = Channel()
+
+a = 2

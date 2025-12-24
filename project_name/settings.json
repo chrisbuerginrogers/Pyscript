@@ -1,0 +1,9 @@
+
+{
+  "packages": ["arrr"],
+  "files": ["https://chrisrogers.pyscriptapps.com/talking-on-spike/latest/py/RS232.py"],
+  "interpreter": "2024.7.1",
+  "js_modules.main": ["https://cdn.jsdelivr.net/npm/micro-repl@0.8.2/serial.js" = "micro_repl"]
+}
+
+x

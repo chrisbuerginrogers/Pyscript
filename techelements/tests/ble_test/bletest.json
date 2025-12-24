@@ -1,0 +1,14 @@
+{
+    "name": "BLE Test",
+    "files": {
+        "../../subs/Hub.py": "",
+        "../../subs/pyConst.py": "",
+        "../../subs/SpikePrime.py": "",
+        "../../subs/TechElement.py": ""
+        },
+    "js_modules": {
+        "main": {
+            "../../js/ble2.js": "ble"
+        }
+    }
+}

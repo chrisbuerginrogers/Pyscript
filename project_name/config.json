@@ -1,0 +1,17 @@
+{
+  "users": {
+    "crogers": [
+      "a9a77d1bd3e6514925b220f3327b1d45b50400c09b252267c0afc0e515c4619e",
+      "4b7fd2821d6226f242e2fcc2598ac3b6a9299c0ef7ecc611812493136f4c8bac"
+    ],
+    "fred": [
+      "a61f56de9d665899f2da26eeadaa1cb178f9a5d6797391f7a8f62b06d7085565",
+      "88427d92048fc44d9920ca67f9cfd170a9e278d89130859b216125cfcdf47413"
+    ]
+  },
+  "proxies": {},
+  "jwt": {
+    "secret": "SZ7j61vL3Bgw8AhPhsfFQ6TQdhmMXH40USgx1nzZW-U",
+    "expiry_hours": 24
+  }
+}

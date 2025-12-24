@@ -1,0 +1,11 @@
+{
+    "name": "Channel Test",
+    "files": {
+        "../../subs/channel.py": ""
+        },
+    "js_modules": {
+        "main": {
+            "../../js/ble2.js": "ble"
+        }
+    }
+}

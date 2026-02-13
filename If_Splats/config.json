@@ -1,0 +1,13 @@
+{
+  "users": {
+    "crogers": [
+      "7b416019988991748b0fc10c63468eb83903906a00efa6e7e2f9802dc3d30a5c",
+      "ee8426c1bbc5a756c04eb7cd70abe402a9b62cb8d46f033571e6fcc754bab96f"
+    ]
+  },
+  "proxies": {},
+  "jwt": {
+    "secret": "YPKzZRTtJ5WoyT2XGgoXUvp7HB3Bn5M-TlWjpb_3rR0",
+    "expiry_hours": 24
+  }
+}

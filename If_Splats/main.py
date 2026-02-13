@@ -1,6 +1,7 @@
 from pyscript import document, window, when
 import splats
 import channel
+import asyncio
 
 COLORS = [
     (255, 0, 0),
@@ -34,6 +35,7 @@ liveBtn = document.getElementById('live')
 waitfor = document.getElementById('waitfor')
 light = document.getElementById('do_light')
 sound = document.getElementById('do_sound')
+note = document.getElementById('do_note')
 
 @when("click", "#ble")
 async def ask(event):
@@ -64,10 +66,12 @@ async def theEvent(data):
     if data[0] == 3: # btn
         if data[2] ==0: # released
             window.console.log(f'released: {waitfor.value}')
+            myChannel.post(chan_topic.value + '/release',waitfor.value)
             if waitfor.value == 'release':
                 await theAction()
         else:
             window.console.log(f'pressed: {waitfor.value}')
+            myChannel.post(chan_topic.value + '/press',waitfor.value)
             if waitfor.value == 'press':
                 await theAction()
 
@@ -80,6 +84,11 @@ async def theAction():
         window.console.log('color: ', light.value)
     if sound.value == 'nada':
         pass
+    elif sound.value == 'note':
+        await myHub.noteOn(int(note.value), 255, 4, 16)
+        window.console.log('note ', note.value) 
+        await asyncio.sleep(0.5)
+        await myHub.noteOff(int(note.value), 255, 4, 16)
     else:
         await myHub.playSound(SOUNDS[int(sound.value)], 255)
         window.console.log('sound ', sound.value)

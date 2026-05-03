@@ -1,0 +1,8 @@
+{
+    "liveServer.settings.https": {
+        "enable": true, // Set to true to enable HTTPS
+        "cert": "/Users/crogers/Documents/_SSL keys for localhost/localhost.crt", 
+        "key": "/Users/crogers/Documents/_SSL keys for localhost/localhost.key", 
+        "passphrase": "" // Leave empty if you didn't set a passphrase
+    }
+}

@@ -1,1 +1,0 @@
-# This just tests the BLE connections

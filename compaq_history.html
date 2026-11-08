@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COMPAQ Heat Flux History</title>
+<link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css">
+<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--ink:#1e2a3a;--muted:#5b6675;--line:#d5dbe3;--grid:#e6eaf0;--blue:#1f5faf;--flux:#d1431f;--temp:#1f5faf}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#10151c;--card:#18202a;--ink:#e6ebf2;--muted:#93a0b2;--line:#2a3544;--grid:#243040;--blue:#6aa6ff;--flux:#ff7a59;--temp:#6aa6ff}
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding:14px 16px}
+header h1{font-size:20px;margin:0;font-weight:650}
+header .sp{flex:1}
+.range button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);padding:5px 12px;cursor:pointer;margin-left:-1px}
+.range button:first-child{border-radius:6px 0 0 6px;margin-left:0}
+.range button:last-child{border-radius:0 6px 6px 0}
+.range button.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+main{padding:0 16px 16px;max-width:1100px;margin:0 auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:12px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.tile .lab{font-size:12px;color:var(--muted)}
+.tile .big{font-size:30px;font-weight:650;font-variant-numeric:tabular-nums}
+.tile .sub{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+canvas{width:100%;height:300px;display:block;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:12px}
+#status{font-size:12px;color:var(--muted);padding:0 16px 16px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>COMPAQ heat flux &amp; temperature</h1>
+  <span class="sp"></span>
+  <span class="range" id="range"></span>
+</header>
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="lab">Heat flux (W/m²)</div><div class="big" id="qNow" style="color:var(--flux)">–</div><div class="sub" id="qSub">&nbsp;</div></div>
+    <div class="tile"><div class="lab">Temperature (°C)</div><div class="big" id="tNow" style="color:var(--temp)">–</div><div class="sub" id="tSub">&nbsp;</div></div>
+  </div>
+  <canvas id="qPlot"></canvas>
+  <canvas id="tPlot"></canvas>
+</main>
+<div id="status">Loading…</div>
+
+<script type="py">
+import asyncio, math
+from datetime import datetime
+from js import document, window, Date
+from pyodide.ffi import create_proxy
+from pyodide.http import pyfetch
+
+# Public Adafruit IO feeds (group "fluxteq"); averaged once a minute by the UNO Q.
+BASE = "https://io.adafruit.com/api/v2/chrisbuerginrogers/feeds"
+RANGES = [("1 h", 1), ("6 h", 6), ("24 h", 24), ("7 d", 168), ("30 d", 720)]
+REFRESH_S = 60
+STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800]
+
+def el(i): return document.getElementById(i)
+
+hours = 24
+data = {"q": ([], []), "t": ([], [])}   # (epoch seconds, values)
+hover = None                              # epoch seconds under the cursor
+
+def css(name):
+    return window.getComputedStyle(document.documentElement).getPropertyValue(name).strip()
+
+async def fetch_feed(feed):
+    r = await pyfetch(f"{BASE}/fluxteq.{feed}/data/chart?hours={hours}")
+    j = await r.json()
+    ts, ys = [], []
+    for d, v in j["data"]:
+        try:
+            ts.append(datetime.fromisoformat(d.replace("Z", "+00:00")).timestamp())
+            ys.append(float(v))
+        except (ValueError, TypeError):
+            pass
+    return ts, ys
+
+def fmt(x):
+    return f"{x:.0f}" if abs(x) >= 1000 else f"{x:.1f}" if abs(x) >= 100 else f"{x:.2f}"
+
+def local(ts):
+    return Date.new(ts * 1000)
+
+def two(n): return f"{int(n):02d}"
+
+def clock(ts, with_date):
+    d = local(ts)
+    s = f"{two(d.getHours())}:{two(d.getMinutes())}"
+    return f"{d.getMonth()+1}/{d.getDate()} {s}" if with_date else s
+
+async def refresh(_=None):
+    try:
+        data["q"], data["t"] = await asyncio.gather(fetch_feed("heatflux"), fetch_feed("temp"))
+    except Exception as e:
+        el("status").textContent = f"Could not load data: {e}"
+        return
+    update_tiles()
+    draw()
+    ts = data["q"][0]
+    if ts:
+        age = (Date.now() / 1000 - ts[-1]) / 60
+        el("status").textContent = (f"Last reading {clock(ts[-1], True)} ({age:.0f} min ago). "
+                                    f"Updated {clock(Date.now() / 1000, False)}; refreshes every minute.")
+    else:
+        el("status").textContent = "No data in this range yet."
+
+def update_tiles():
+    for key, now, sub in (("q", "qNow", "qSub"), ("t", "tNow", "tSub")):
+        ts, ys = data[key]
+        if ys:
+            el(now).textContent = fmt(ys[-1])
+            el(sub).textContent = f"min {fmt(min(ys))}   avg {fmt(sum(ys)/len(ys))}   max {fmt(max(ys))}"
+        else:
+            el(now).textContent = "–"; el(sub).innerHTML = "&nbsp;"
+
+def span():
+    """Visible time range: the selected window, trimmed to start at the first data point."""
+    x1 = Date.now() / 1000
+    x0 = x1 - hours * 3600
+    firsts = [d[0][0] for d in data.values() if d[0]]
+    if firsts:
+        x0 = max(x0, min(firsts) - 60)
+    return x0, max(x1, x0 + 300)
+
+def nice_y(lo, hi, k=5):
+    if not hi > lo:
+        lo, hi = lo - 1, hi + 1
+    step0 = (hi - lo) / k
+    mag = 10 ** math.floor(math.log10(step0))
+    r = step0 / mag
+    step = (1 if r < 1.5 else 2 if r < 3 else 5 if r < 7 else 10) * mag
+    a, b = math.floor(lo / step) * step, math.ceil(hi / step) * step
+    ticks, x = [], a
+    while x <= b + step / 2:
+        ticks.append(round(x, 10)); x += step
+    return a, b, ticks
+
+def plot(canvas, ts, ys, title, color):
+    dpr = window.devicePixelRatio or 1
+    W, H = canvas.clientWidth, canvas.clientHeight
+    if canvas.width != int(W * dpr) or canvas.height != int(H * dpr):
+        canvas.width, canvas.height = int(W * dpr), int(H * dpr)
+    g = canvas.getContext("2d")
+    g.setTransform(dpr, 0, 0, dpr, 0, 0)
+    g.clearRect(0, 0, W, H)
+    ink, muted, grid = css("--ink"), css("--muted"), css("--grid")
+    L, R, T, B = 56, 14, 30, 30
+    pw, ph = W - L - R, H - T - B
+    g.fillStyle = ink; g.font = "600 13px -apple-system, Arial"; g.textAlign = "left"; g.fillText(title, L, 19)
+    if not ts:
+        g.fillStyle = muted; g.font = "13px -apple-system, Arial"; g.textAlign = "center"
+        g.fillText("no data", L + pw / 2, T + ph / 2); return
+    x0, x1 = span()
+    ylo, yhi = min(ys), max(ys)
+    pad = (yhi - ylo) * 0.1 or 1
+    y0, y1, yt = nice_y(ylo - pad, yhi + pad)
+    sx = lambda x: L + (x - x0) / (x1 - x0) * pw
+    sy = lambda y: T + ph - (y - y0) / (y1 - y0) * ph
+
+    g.lineWidth = 1; g.font = "11px -apple-system, Arial"
+    g.strokeStyle = grid; g.fillStyle = muted; g.textAlign = "right"
+    for y in yt:
+        p = round(sy(y)) + 0.5
+        g.beginPath(); g.moveTo(L, p); g.lineTo(L + pw, p); g.stroke()
+        g.fillText(f"{y:.6g}", L - 6, p + 4)
+    step = next((s for s in STEPS if (x1 - x0) / s <= 7), STEPS[-1])
+    off = -local(x0).getTimezoneOffset() * 60
+    t = math.ceil((x0 + off) / step) * step - off
+    g.textAlign = "center"
+    while t <= x1:
+        p = round(sx(t)) + 0.5
+        g.beginPath(); g.moveTo(p, T); g.lineTo(p, T + ph); g.stroke()
+        g.fillText(clock(t, hours > 24), p, T + ph + 16)
+        t += step
+    g.strokeStyle = css("--line"); g.strokeRect(L + 0.5, T + 0.5, pw, ph)
+
+    g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip()
+    g.strokeStyle = color; g.lineWidth = 1.8; g.lineJoin = "round"; g.beginPath()
+    for k, (x, y) in enumerate(zip(ts, ys)):
+        if k == 0 or x - ts[k - 1] > max(600, (x1 - x0) / 40):   # break the line across gaps
+            g.moveTo(sx(x), sy(y))
+        else:
+            g.lineTo(sx(x), sy(y))
+    g.stroke()
+    if len(ts) < 60:
+        g.fillStyle = color
+        for x, y in zip(ts, ys):
+            g.beginPath(); g.arc(sx(x), sy(y), 2.5, 0, 2 * math.pi); g.fill()
+    g.restore()
+
+    if hover is not None:
+        k = min(range(len(ts)), key=lambda i: abs(ts[i] - hover))
+        px, py = sx(ts[k]), sy(ys[k])
+        g.strokeStyle = muted; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(px, T); g.lineTo(px, T + ph); g.stroke(); g.setLineDash([])
+        g.fillStyle = color; g.beginPath(); g.arc(px, py, 4, 0, 2 * math.pi); g.fill()
+        label = f"{fmt(ys[k])}   {clock(ts[k], True)}"
+        g.font = "600 12px -apple-system, Arial"
+        w = g.measureText(label).width + 12
+        bx = min(max(px - w / 2, L), L + pw - w)
+        g.fillStyle = css("--card"); g.strokeStyle = color; g.lineWidth = 1
+        g.fillRect(bx, T + 4, w, 20); g.strokeRect(bx + 0.5, T + 4.5, w, 20)
+        g.fillStyle = ink; g.textAlign = "left"; g.fillText(label, bx + 6, T + 18)
+
+def draw(_=None):
+    plot(el("qPlot"), *data["q"], "Heat flux (W/m²)", css("--flux"))
+    plot(el("tPlot"), *data["t"], "Temperature (°C)", css("--temp"))
+
+def on_move(evt):
+    global hover
+    cv = evt.currentTarget
+    rect = cv.getBoundingClientRect()
+    x = evt.clientX - rect.left
+    L, R = 56, 14
+    x0, x1 = span()
+    hover =x0 + (x - L) / (rect.width - L - R) * (x1 - x0)
+    draw()
+
+def on_leave(_):
+    global hover
+    hover = None
+    draw()
+
+def set_range(h):
+    global hours
+    hours = h
+    for b in el("range").children:
+        b.classList.toggle("on", int(b.dataset.h) == h)
+    asyncio.ensure_future(refresh())
+
+def build_range():
+    box = el("range")
+    for label, h in RANGES:
+        b = document.createElement("button")
+        b.textContent = label; b.dataset.h = str(h)
+        b.addEventListener("click", create_proxy(lambda e, h=h: set_range(h)))
+        box.appendChild(b)
+    for b in box.children:
+        b.classList.toggle("on", int(b.dataset.h) == hours)
+
+async def main():
+    build_range()
+    for c in (el("qPlot"), el("tPlot")):
+        c.addEventListener("mousemove", create_proxy(on_move))
+        c.addEventListener("mouseleave", create_proxy(on_leave))
+    window.addEventListener("resize", create_proxy(draw))
+    while True:
+        await refresh()
+        await asyncio.sleep(REFRESH_S)
+
+asyncio.ensure_future(main())
+</script>
+</body>
+</html>

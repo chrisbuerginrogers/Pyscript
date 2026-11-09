@@ -21,6 +21,11 @@ header .sp{flex:1}
 .range button:first-child{border-radius:6px 0 0 6px;margin-left:0}
 .range button:last-child{border-radius:0 6px 6px 0}
 .range button.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+header .avg{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+header .avg select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 4px}
+header .avg b{color:var(--ink);min-width:62px;font-variant-numeric:tabular-nums}
+.btn{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 12px;cursor:pointer}
+.btn:active{background:var(--grid)}
 main{padding:0 16px 16px;max-width:1100px;margin:0 auto}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:12px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
@@ -35,7 +40,9 @@ main{padding:0 16px 16px;max-width:1100px;margin:0 auto}
 <header>
   <h1>COMPAQ heat flux &amp; temperature</h1>
   <span class="sp"></span>
+  <label class="avg">Rolling <select id="mode"><option value="median">median</option><option value="mean">mean</option></select> <input type="range" id="win" min="1" max="60" value="1"> <b id="winLab">off</b></label>
   <span class="range" id="range"></span>
+  <button id="refreshBtn" class="btn">⟳ Refresh</button>
 </header>
 <main>
   <div class="tiles">
@@ -48,7 +55,7 @@ main{padding:0 16px 16px;max-width:1100px;margin:0 auto}
 
 <script type="py">
 import asyncio, math
-from datetime import datetime
+from datetime import datetime, timezone
 from js import document, window, Date, Object
 from pyodide.ffi import create_proxy, to_js
 from pyodide.http import pyfetch
@@ -61,6 +68,15 @@ REFRESH_S = 60
 def el(i): return document.getElementById(i)
 
 hours = 24
+loaded_hours = None
+zoomed = False
+win = 1
+mode = "median"
+plot_ready = False
+
+def set_loaded():
+    global loaded_hours
+    loaded_hours = hours
 data = {"q": ([], []), "t": ([], [])}   # (epoch seconds, values)
 
 def css(name):
@@ -76,34 +92,86 @@ async def fetch_feed(feed):
             ys.append(float(v))
         except (ValueError, TypeError):
             pass
-    return ts, ys
+    try:
+        srv = datetime.fromisoformat(j["parameters"]["end_time"].replace("Z", "+00:00")).timestamp()
+    except Exception:
+        srv = None
+    return ts, ys, srv
 
 def fmt(x):
     return f"{x:.0f}" if abs(x) >= 1000 else f"{x:.1f}" if abs(x) >= 100 else f"{x:.2f}"
 
-def local(ts):
-    return Date.new(ts * 1000)
+import time
+SANE = 1.6e9   # any real "now" is later than Sep 2020
+clock_warn = []
 
-def two(n): return f"{int(n):02d}"
+_srv = [None, 0.0]   # server "now" (Adafruit end_time) and time.monotonic() when it was received
+
+def sync_clock(srv):
+    _srv[0], _srv[1] = srv, time.monotonic()
+
+def now_s():
+    """Seconds since epoch from Adafruit's server clock (browser clock has read ~1970 here)."""
+    if _srv[0]:
+        return _srv[0] + (time.monotonic() - _srv[1])
+    return now_browser()
+
+def now_browser():
+    cands = [("Date.now", window.Date.now() / 1000), ("time.time", time.time())]
+    for name, v in cands:
+        if v > SANE:
+            if name != "Date.now":
+                clock_warn[:] = [f"Date.now()={cands[0][1]:.0f}"]
+            else:
+                clock_warn.clear()
+            return v
+    # both clocks bad: use the newest data point so the window still lands on the data
+    clock_warn[:] = [f"clock bad: Date.now()={cands[0][1]:.0f}, time.time()={cands[1][1]:.0f}"]
+    last = max([data["q"][0][-1:] or [0], data["t"][0][-1:] or [0]])[0]
+    return last if last > SANE else cands[0][1]
+
+_off = {}   # hour bucket -> JS timezone offset (minutes); one Date per hour, not per point
+
+def tz_off(ts):
+    k = int(ts // 3600)
+    if k not in _off:
+        _off[k] = Date.new(k * 3600 * 1000).getTimezoneOffset()
+    return _off[k]
+
+def local_secs(ts):
+    """Epoch seconds shifted so UTC fields equal the viewer's local wall-clock time."""
+    return ts - tz_off(ts) * 60
+
+def local_str(ts):
+    return datetime.fromtimestamp(local_secs(ts), timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def clock(ts, with_date):
-    d = local(ts)
-    s = f"{two(d.getHours())}:{two(d.getMinutes())}"
-    return f"{d.getMonth()+1}/{d.getDate()} {s}" if with_date else s
+    d = datetime.fromtimestamp(local_secs(ts), timezone.utc)
+    return d.strftime("%-m/%-d %H:%M") if with_date else d.strftime("%H:%M")
 
 async def refresh(_=None):
     try:
-        data["q"], data["t"] = await asyncio.gather(fetch_feed("heatflux"), fetch_feed("temp"))
+        (qts_, qys_, srv), (tts_, tys_, _s2) = await asyncio.gather(fetch_feed("heatflux"), fetch_feed("temp"))
+        q, t = (qts_, qys_), (tts_, tys_)
+        if srv:
+            sync_clock(srv)
     except Exception as e:
         el("status").textContent = f"Could not load data: {e}"
         return
+    if not q[0] and not t[0] and (data["q"][0] or data["t"][0]) and loaded_hours == hours:
+        el("status").textContent = "Fetch returned no points; keeping previous data."
+        return
+    data["q"], data["t"] = q, t
+    set_loaded()
     update_tiles()
     draw()
     ts = data["q"][0]
     if ts:
-        age = (Date.now() / 1000 - ts[-1]) / 60
-        el("status").textContent = (f"Last reading {clock(ts[-1], True)} ({age:.0f} min ago). "
-                                    f"Updated {clock(Date.now() / 1000, False)}; refreshes every minute.")
+        age = (now_s() - ts[-1]) / 60
+        el("status").textContent = (f"v4 · Last reading {clock(ts[-1], True)} ({age:.0f} min ago). "
+                                    f"Updated {clock(now_s(), False)}; refreshes every minute."
+                                    + (f" [{clock_warn[0]}]" if clock_warn else "")
+                                    + f" [browser clock {window.Date.now() / 1000 - now_s():+.0f}s vs server]")
     else:
         el("status").textContent = "No data in this range yet."
 
@@ -116,44 +184,92 @@ def update_tiles():
         else:
             el(now).textContent = "–"; el(sub).innerHTML = "&nbsp;"
 
-def local_str(ts):
-    d = local(ts)
-    return f"{d.getFullYear()}-{two(d.getMonth()+1)}-{two(d.getDate())} {two(d.getHours())}:{two(d.getMinutes())}:{two(d.getSeconds())}"
+def rolling(ys, w):
+    """Centered rolling median or mean over w points (fewer at the ends), so the curve is not delayed."""
+    if w <= 1:
+        return ys
+    out = []
+    for i in range(len(ys)):
+        seg = ys[max(0, i - w // 2):i + w - w // 2]
+        n = len(seg)
+        if mode == "mean":
+            out.append(sum(seg) / n)
+        else:
+            seg = sorted(seg)
+            out.append(seg[n // 2] if n % 2 else (seg[n // 2 - 1] + seg[n // 2]) / 2)
+    return out
 
 def obj(d):
     return to_js(d, dict_converter=Object.fromEntries)
 
 def draw(_=None):
     ink, muted, grid = css("--ink"), css("--muted"), css("--grid")
-    now = Date.now() / 1000
+    now = now_s()
     qts, qys = data["q"]; tts, tys = data["t"]
-    traces = [
-        {"x": [local_str(x) for x in qts], "y": qys, "name": "Heat flux (W/m²)", "xaxis": "x", "yaxis": "y",
-         "mode": "lines+markers", "line": {"color": css("--flux"), "width": 2}, "marker": {"size": 4},
-         "hovertemplate": "%{y:.2f} W/m²<extra></extra>"},
-        {"x": [local_str(x) for x in tts], "y": tys, "name": "Temperature (°C)", "xaxis": "x", "yaxis": "y2",
-         "mode": "lines+markers", "line": {"color": css("--temp"), "width": 2}, "marker": {"size": 4},
-         "hovertemplate": "%{y:.2f} °C<extra></extra>"},
-    ]
+    traces = []
+    for ts, ys, name, yax, color, unit in ((qts, qys, "Heat flux (W/m²)", "y", css("--flux"), "W/m²"),
+                                           (tts, tys, "Temperature (°C)", "y2", css("--temp"), "°C")):
+        xs = [local_str(x) for x in ts]
+        if win > 1:
+            traces.append({"x": xs, "y": ys, "name": "raw", "xaxis": "x", "yaxis": yax, "mode": "lines",
+                           "line": {"color": color, "width": 1}, "opacity": 0.25, "hoverinfo": "skip"})
+            traces.append({"x": xs, "y": rolling(ys, win), "name": name + f" {mode} {win}", "xaxis": "x", "yaxis": yax,
+                           "mode": "lines", "line": {"color": color, "width": 2.5},
+                           "hovertemplate": f"%{{y:.2f}} {unit} ({mode} of {win})<extra></extra>"})
+        else:
+            traces.append({"x": xs, "y": ys, "name": name, "xaxis": "x", "yaxis": yax,
+                           "mode": "lines+markers", "line": {"color": color, "width": 2}, "marker": {"size": 4},
+                           "hovertemplate": f"%{{y:.2f}} {unit}<extra></extra>"})
     axis = {"gridcolor": grid, "linecolor": grid, "zerolinecolor": grid, "tickfont": {"color": muted}}
     layout = {
-        "uirevision": str(hours),          # keep the user's zoom across refreshes; reset when the range changes
+        "uirevision": str(hours),          # keep y-zoom across refreshes; reset when the range changes
         "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
         "font": {"color": ink}, "showlegend": False, "hovermode": "x unified",
         "margin": {"l": 70, "r": 20, "t": 20, "b": 40},
-        "xaxis": dict(axis, anchor="y2", range=[local_str(now - hours * 3600), local_str(now)]),
+        "xaxis": dict(axis, anchor="y2", autorange=False,
+                    range=[local_str(now - hours * 3600), local_str(now)],
+                    uirevision=(f"z{hours}" if zoomed else f"{hours}-{int(now)}")),  # slide window unless user zoomed
         "yaxis": dict(axis, domain=[0.56, 1.0], title={"text": "Heat flux (W/m²)"}),
         "yaxis2": dict(axis, domain=[0.0, 0.44], title={"text": "Temperature (°C)"}),
     }
     window.Plotly.react(el("plot"), to_js([obj(t) for t in traces]), obj(layout),
                         obj({"responsive": True, "displaylogo": False}))
+    global plot_ready
+    if not plot_ready:
+        plot_ready = True
+        el("plot").on("plotly_relayout", create_proxy(on_relayout))
+
+def on_relayout(ev):
+    """User zoom/pan -> freeze x range; returning to the live window -> resume sliding."""
+    global zoomed
+    try:
+        e = ev.to_py()
+        lo, hi = e.get("xaxis.range[0]"), e.get("xaxis.range[1]")
+        if lo is None or hi is None:
+            if e.get("xaxis.autorange"):
+                zoomed = False
+            return
+        f = lambda v: datetime.strptime(str(v)[:19], "%Y-%m-%d %H:%M:%S").timestamp()  # naive, treated as UTC-agnostic
+        now = now_s()
+        wlo, whi = f(local_str(now - hours * 3600)), f(local_str(now))
+        zoomed = abs(f(lo) - wlo) > 90 or abs(f(hi) - whi) > 90
+    except Exception:
+        zoomed = True
 
 def set_range(h):
-    global hours
+    global hours, zoomed
     hours = h
+    zoomed = False
     for b in el("range").children:
         b.classList.toggle("on", int(b.dataset.h) == h)
     asyncio.ensure_future(refresh())
+
+def set_win(e=None):
+    global win, mode
+    win = int(el("win").value)
+    mode = el("mode").value
+    el("winLab").textContent = "off" if win <= 1 else f"{win} pts"
+    draw()
 
 def build_range():
     box = el("range")
@@ -167,6 +283,9 @@ def build_range():
 
 async def main():
     build_range()
+    el("win").addEventListener("input", create_proxy(set_win))
+    el("mode").addEventListener("change", create_proxy(set_win))
+    el("refreshBtn").addEventListener("click", create_proxy(lambda e: asyncio.ensure_future(refresh())))
     while True:
         await refresh()
         await asyncio.sleep(REFRESH_S)
